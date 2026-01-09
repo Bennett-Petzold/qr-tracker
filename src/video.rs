@@ -1,29 +1,26 @@
-use image::{
-    codecs::jpeg::JpegDecoder, DynamicImage, ImageBuffer, ImageDecoder, ImageReader, Rgb, RgbImage,
-};
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+use image::{DynamicImage, codecs::jpeg::JpegDecoder};
 use nokhwa::{
-    pixel_format::RgbFormat,
-    utils::{
-        CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution,
-    },
     Camera,
+    pixel_format::RgbFormat,
+    utils::{CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution},
 };
 use rqrr::PreparedImage;
 
 use std::{
-    io::{BufReader, Cursor, Write},
-    net::UdpSocket,
-    sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering},
-        mpsc::{self},
-        OnceLock,
-    },
+    io::{Cursor, Write},
+    sync::atomic::{AtomicBool, Ordering},
 };
 use std::{net::TcpListener, thread};
 
 use crate::{
-    atomic_buf::{AtomicBuffer, AtomicBufferSplit},
     CAMERA_RESOLUTION_LIST, VIDEO_SOCKET,
+    atomic_buf::{AtomicBuffer, AtomicBufferSplit},
 };
 
 /// Arbitrary buffer length to allow streaming/analysis to catch up with input.
@@ -103,7 +100,7 @@ pub fn video_routine(
             }
         });
 
-        let stream_writer = s.spawn(|| {
+        let _stream_writer = s.spawn(|| {
             let mut packet = Vec::new();
             let mut frame_header_len = 0;
             let mut cur_frame_len = 0;
@@ -151,7 +148,7 @@ pub fn video_routine(
             }
         });
 
-        let analysis = s.spawn(|| {
+        let _analysis = s.spawn(|| {
             println!("Analysis Loaded");
             loop {
                 // Whenever the resolution changes, flush QR processing.
@@ -182,7 +179,7 @@ pub fn video_routine(
         });
 
         camera_reader.join().unwrap();
-        stream_writer.join().unwrap();
-        analysis.join().unwrap();
+        _stream_writer.join().unwrap();
+        _analysis.join().unwrap();
     });
 }

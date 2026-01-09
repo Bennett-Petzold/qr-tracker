@@ -1,25 +1,18 @@
-# Development
+# QR-Tracker
+Use QR codes to track attendance.
 
-Your new bare-bones project includes minimal organization with a single `main.rs` file and a few assets.
+Uses the default camera to track students, mentors, and guests in qr-tracker.db.
+QR codes are simply names or Guest\*.
+This database has all information needed to reconstruct attendance,
+e.g. to demonstrate there were always at least two adults present whenever a
+student is in the build space.
+It can be trivially copied off of the host machine.
+The student and mentor lists must be manually initialized and updated.
 
-```
-project/
-├─ assets/ # Any assets that are used by the app should be placed here
-├─ src/
-│  ├─ main.rs # main.rs is the entry point to your application and currently contains all components for the app
-├─ Cargo.toml # The Cargo.toml file defines the dependencies and feature flags for your project
-```
+## Adding Students and Mentors
+Add the names as they appear in the QR codes to the mentors and students tables.
+See `src/sqlite.rs::BackingDatabase::new` for table format.
 
-### Serving Your App
-
-Run the following command in the root of your project to start developing with the default platform:
-
-```bash
-dx serve
-```
-
-To run for a different platform, use the `--platform platform` flag. E.g.
-```bash
-dx serve --platform desktop
-```
-
+## Transferring to a New Machine
+Delete the `resolution` table.
+Any resolution in that table not valid on a machine will cause crashes.

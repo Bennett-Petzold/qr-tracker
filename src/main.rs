@@ -1,15 +1,22 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
 use std::{
     collections::HashMap,
     fmt::Write,
+    path::PathBuf,
     rc::Rc,
-    sync::{OnceLock, RwLock},
+    sync::{LazyLock, OnceLock, RwLock},
     thread,
     time::Duration,
 };
 
 use chrono::{DateTime, Local};
 use dioxus::{
-    desktop::{tao::platform::unix::WindowBuilderExtUnix, WindowBuilder},
+    desktop::{WindowBuilder, tao::platform::unix::WindowBuilderExtUnix},
     prelude::*,
 };
 use nokhwa::utils::Resolution;
@@ -18,11 +25,26 @@ use crate::{sqlite::BackingDatabase, video::video_routine};
 
 /// Arbitrary buffer length to allow QR processing to catch up with QR input.
 const QR_BUFFER_SIZE: usize = 128;
-const BACKING_DATABASE_FILE: &str = "gearcats-qr-tracker.db";
 const MIN_SCAN_SPACING_SECS: i64 = 5;
 
 pub const VIDEO_SOCKET: &str = "localhost:2343";
 pub const VIDEO_SOCKET_HTTP: &str = const_str::concat!("http://", VIDEO_SOCKET);
+
+static BACKING_DATABASE_FILE: LazyLock<String> = LazyLock::new(|| {
+    let mut path = "qr-tracker.db".to_string();
+
+    // Appimage compatibility.
+    // By default AppImage changes to a /usr directory.
+    // This changes back to the program launch directory.
+    if let Ok(owd) = std::env::var("OWD") {
+        let mut new_path = PathBuf::from(owd);
+        new_path.push(path);
+        println!("Extended path for appimage: {}", new_path.to_string_lossy());
+        path = new_path.to_string_lossy().to_string();
+    }
+
+    path
+});
 
 static MAIN_CSS: Asset = asset!("/assets/main.css");
 
@@ -37,13 +59,6 @@ pub static CAMERA_RESOLUTION_LIST: OnceLock<Box<[Resolution]>> = OnceLock::new()
 struct VideoChannels {
     pub qr_reads_rx: async_channel::Receiver<String>,
     pub camera_resolution_select_tx: async_channel::Sender<Resolution>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum QrType {
-    Mentor,
-    Student,
-    Guest,
 }
 
 fn main() {
@@ -101,7 +116,7 @@ fn format_evenly(entries: &[(String, DateTime<Local>)]) -> String {
 fn app() -> Element {
     let backing_db = use_hook(|| {
         Rc::new(RwLock::new(BackingDatabase::new(Some(
-            BACKING_DATABASE_FILE,
+            &BACKING_DATABASE_FILE,
         ))))
     });
     let backing_db_process_change = backing_db.clone();

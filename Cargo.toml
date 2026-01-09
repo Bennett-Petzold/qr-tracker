@@ -2,7 +2,8 @@
 name = "qr-tracker"
 version = "0.1.0"
 authors = ["Bennett Petzold <dansecob.dev@gmail.com>"]
-edition = "2021"
+edition = "2024"
+license = "MPL-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,11 +19,11 @@ chrono = "0.4"
 # Const string concat
 const-str = "1"
 # Access to async sleep
-tokio = { version = "1.49", default_features = false, features = ["time"] }
+tokio = { version = "1.49", default-features = false, features = ["time"] }
 
 # Video streaming and processing
 image = "0.25"
-nokhwa = { version = "0.10", features = ["input-v4l"] }
+nokhwa = { version = "0.10", features = ["input-native"] }
 rqrr = "0.10"
 
 # Database format
@@ -32,6 +33,13 @@ atomic-wait = "1"
 
 [features]
 default = ["desktop"]
-web = ["dioxus/web"]
 desktop = ["dioxus/desktop"]
-mobile = ["dioxus/mobile"]
+
+[profile.release]
+opt-level = 3
+debug = false
+strip = "symbols"
+overflow-checks = false
+lto = true
+panic = "abort"
+codegen-units = 1

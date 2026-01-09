@@ -1,5 +1,17 @@
 [application]
 
+[bundle]
+identifier = "dev.dansecob"
+publisher = "dansecob"
+icon = [
+	"assets/favicon.ico",
+	"assets/icon16x16.png",
+	"assets/icon24x24.png",
+	"assets/icon32x32.png",
+	"assets/icon64x64.png",
+	"assets/icon256x256.png",
+]
+
 [web.app]
 
 # HTML title tag content

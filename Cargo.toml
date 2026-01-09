@@ -27,10 +27,8 @@ rqrr = "0.10"
 
 # Database format
 rusqlite = { version = "0.38", features = ["bundled"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
 # Prevents excessive yield_now spinning
-linux-futex = "1"
+atomic-wait = "1"
 
 [features]
 default = ["desktop"]

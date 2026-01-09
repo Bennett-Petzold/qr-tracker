@@ -151,4 +151,10 @@ SET timestamp = ?2, present = NOT present;",
         }
         transaction.commit().unwrap();
     }
+
+    pub fn checkpoint(&self) {
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+            .unwrap();
+    }
 }

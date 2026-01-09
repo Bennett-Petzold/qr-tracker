@@ -1,10 +1,10 @@
 use std::{
-    cell::{LazyCell, OnceCell},
     collections::HashMap,
     fmt::Write,
-    sync::{mpsc, Arc, LazyLock, Mutex, OnceLock, RwLock},
+    rc::Rc,
+    sync::{OnceLock, RwLock},
     thread,
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use chrono::{DateTime, Local};
@@ -88,7 +88,7 @@ fn format_evenly(entries: &[(String, DateTime<Local>)]) -> String {
             out.push(' ');
         }
 
-        writeln!(out, " {}", time.format("%m-%d-%Y %H:%M:%S %p")).unwrap();
+        writeln!(out, "\t{}", time.format("%m-%d-%Y %H:%M:%S %p")).unwrap();
     }
 
     // Remove trailing newline
@@ -100,23 +100,15 @@ fn format_evenly(entries: &[(String, DateTime<Local>)]) -> String {
 #[component]
 fn app() -> Element {
     let backing_db = use_hook(|| {
-        Arc::new(RwLock::new(BackingDatabase::new(Some(
+        Rc::new(RwLock::new(BackingDatabase::new(Some(
             BACKING_DATABASE_FILE,
         ))))
     });
-    let carryover_present =
-        use_hook(|| backing_db.read().unwrap().get_present().into_boxed_slice());
-    let known_mentor_list =
-        use_hook(|| backing_db.read().unwrap().get_mentors().into_boxed_slice());
-    let known_student_list =
-        use_hook(|| backing_db.read().unwrap().get_students().into_boxed_slice());
+    let backing_db_process_change = backing_db.clone();
+    let backing_db_select = backing_db.clone();
+    let backing_db_select_reset = backing_db.clone();
 
-    let mut mentor_string = use_signal(|| {
-        carryover_present
-            .iter()
-            .filter(|(name, _)| known_mentor_list.contains(name));
-        "".to_string()
-    });
+    let mut mentor_string = use_signal(|| "".to_string());
     let mut student_string = use_signal(|| "".to_string());
     let mut guest_string = use_signal(|| "".to_string());
     let mut process_change = use_signal(|| "".to_string());
@@ -129,12 +121,44 @@ fn app() -> Element {
     } = use_context();
     let camera_resolution_select_tx_reset = camera_resolution_select_tx.clone();
 
+    // Set camera resolution with any existing selection.
+    use_hook(|| {
+        if let Some(resolution) = backing_db.read().unwrap().get_resolution() {
+            camera_resolution_select_tx
+                .send_blocking(resolution)
+                .unwrap();
+        }
+    });
+
+    // Updates attendance lists.
     use_hook(|| {
         spawn(async move {
-            let mut mentor_list = Vec::new();
-            let mut student_list = Vec::new();
-            let mut guest_list = Vec::new();
-            let mut total_list = HashMap::new();
+            let carryover_present = backing_db.read().unwrap().get_present();
+            let known_mentors = backing_db.read().unwrap().get_mentors().into_boxed_slice();
+            let known_students = backing_db.read().unwrap().get_students().into_boxed_slice();
+
+            let mut mentor_list: Vec<_> = carryover_present
+                .iter()
+                .filter(|(name, _)| known_mentors.contains(name))
+                .map(|(name, time)| (name.clone(), *time))
+                .collect();
+            mentor_string.set(format_evenly(&mentor_list));
+
+            let mut student_list: Vec<_> = carryover_present
+                .iter()
+                .filter(|(name, _)| known_students.contains(name))
+                .map(|(name, time)| (name.clone(), *time))
+                .collect();
+            student_string.set(format_evenly(&student_list));
+
+            let mut guest_list: Vec<_> = carryover_present
+                .iter()
+                .filter(|(name, _)| name.starts_with("Guest"))
+                .map(|(name, time)| (name.clone(), *time))
+                .collect();
+            guest_string.set(format_evenly(&guest_list));
+
+            let mut total_list: HashMap<_, _> = carryover_present.into_iter().collect();
 
             loop {
                 let next_qr_read = qr_reads_rx.recv().await.unwrap();
@@ -162,15 +186,14 @@ fn app() -> Element {
                     dest.set(format_evenly(list))
                 };
 
-                if known_mentor_list.contains(&next_qr_read) {
+                if known_mentors.contains(&next_qr_read) {
                     list_update(&mut mentor_list, mentor_string, &next_qr_read);
-                } else if known_student_list.contains(&next_qr_read) {
+                } else if known_students.contains(&next_qr_read) {
                     list_update(&mut student_list, student_string, &next_qr_read);
                 } else if next_qr_read.starts_with("Guest") {
                     list_update(&mut guest_list, guest_string, &next_qr_read);
                 } else {
-                    list_update(&mut guest_list, guest_string, &next_qr_read);
-                    //process_change.set(format!("REJECTED {next_qr_read}"));
+                    process_change.set(format!("REJECTED {next_qr_read}"));
                     continue;
                 };
 
@@ -182,10 +205,14 @@ fn app() -> Element {
         })
     });
 
-    use_resource(move || async move {
-        if !process_change.is_empty() {
-            tokio::time::sleep(Duration::from_mins(1)).await;
-            process_change.set("".to_string());
+    use_resource(move || {
+        let backing_db_process_change = backing_db_process_change.clone();
+        async move {
+            if !process_change.is_empty() {
+                tokio::time::sleep(Duration::from_mins(1)).await;
+                process_change.set("".to_string());
+                backing_db_process_change.read().unwrap().checkpoint();
+            }
         }
     });
 
@@ -210,11 +237,20 @@ fn app() -> Element {
                 button {
                     onclick: move |_| {
                         resolution_select.set("Change Resolution");
+                        let resolution = camera_resolution_list
+                            .first()
+                            .copied();
+
+                        if let Some(resolution) = &resolution {
+                            backing_db_select_reset
+                                .write()
+                                .unwrap()
+                                .set_resolution(*resolution);
+                        }
 
                         let tx = camera_resolution_select_tx_reset.clone();
-                        let resolution = camera_resolution_list.first().copied();
                         async move { if let Some(resolution) = resolution {
-                            tx.send(resolution).await.unwrap()
+                            tx.send(resolution).await.unwrap();
                         }}
                     },
                     "Minimize Resolution"
@@ -224,7 +260,18 @@ fn app() -> Element {
                         let tx = camera_resolution_select_tx.clone();
                         let selected = e.value();
                         let selected = selected.trim();
-                        let resolution = camera_resolution_list.iter().find(|entry| selected == format!("{entry}").trim()).copied();
+                        let resolution = camera_resolution_list
+                            .iter()
+                            .find(|entry| selected == format!("{entry}").trim())
+                            .copied();
+
+                        if let Some(resolution) = &resolution {
+                            backing_db_select
+                                .write()
+                                .unwrap()
+                                .set_resolution(*resolution);
+                        }
+
                         async move { if let Some(resolution) = resolution {
                             tx.send(resolution).await.unwrap()
                         }}

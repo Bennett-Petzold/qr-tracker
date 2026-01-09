@@ -7,15 +7,30 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-chrono = "0.4.42"
-const-str = "1.0.0"
-dioxus = { version = "0.7.1", features = [] }
-dioxus-desktop = "0.7.2"
-futures = "0.3.31"
+# GUI
+dioxus = { version = "0.7", features = [] }
+dioxus-desktop = "0.7"
+
+# Communications between video and Dioxus app
+async-channel = "2"
+# Nice time utility
+chrono = "0.4"
+# Const string concat
+const-str = "1"
+# Access to async sleep
+tokio = { version = "1.49", default_features = false, features = ["time"] }
+
+# Video streaming and processing
 image = "0.25"
-multiqueue = "0.3.2"
 nokhwa = { version = "0.10", features = ["input-v4l"] }
-rqrr = "0.10.0"
+rqrr = "0.10"
+
+# Database format
+rusqlite = { version = "0.38", features = ["bundled"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Prevents excessive yield_now spinning
+linux-futex = "1"
 
 [features]
 default = ["desktop"]

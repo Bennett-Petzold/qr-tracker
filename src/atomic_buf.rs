@@ -8,12 +8,17 @@ use std::{
     thread::yield_now,
 };
 
+#[cfg(target_os = "linux")]
+use linux_futex::{Futex, Private};
+
 #[derive(Debug)]
 /// Shared resources for a ring buffer shareable between threads.
 pub struct AtomicBuffer<T: Send + Sync, const N: usize, const READERS: usize> {
     data: Box<[UnsafeCell<T>; N]>,
     write_ptr: AtomicUsize,
     read_ptrs: [AtomicUsize; READERS],
+    #[cfg(target_os = "linux")]
+    wait_for_step: Futex<Private>,
 }
 
 #[derive(Debug)]
@@ -21,6 +26,8 @@ pub struct AtomicBufferWriter<'a, T: Send + Sync, const N: usize, const READERS:
     data: &'a [UnsafeCell<T>; N],
     write_ptr: &'a AtomicUsize,
     read_ptrs: &'a [AtomicUsize; READERS],
+    #[cfg(target_os = "linux")]
+    wait_for_step: &'a Futex<Private>,
 }
 
 #[derive(Debug)]
@@ -28,6 +35,8 @@ pub struct AtomicBufferReader<'a, T: Send + Sync, const N: usize> {
     data: &'a [UnsafeCell<T>; N],
     write_ptr: &'a AtomicUsize,
     read_ptr: &'a AtomicUsize,
+    #[cfg(target_os = "linux")]
+    wait_for_step: &'a Futex<Private>,
 }
 
 /// Provides a safe handle to the buffered value.
@@ -92,6 +101,8 @@ where
             data: Box::new(array::from_fn(|_idx| UnsafeCell::new(T::default()))),
             write_ptr: 0.into(),
             read_ptrs: [0; READERS].map(AtomicUsize::from),
+            #[cfg(target_os = "linux")]
+            wait_for_step: Futex::new(0),
         }
     }
 }
@@ -106,6 +117,8 @@ where
                 data: &self.data,
                 write_ptr: &self.write_ptr,
                 read_ptrs: &self.read_ptrs,
+                #[cfg(target_os = "linux")]
+                wait_for_step: &self.wait_for_step,
             },
             read_ptrs: self
                 .read_ptrs
@@ -114,6 +127,8 @@ where
                     data: &self.data,
                     write_ptr: &self.write_ptr,
                     read_ptr,
+                    #[cfg(target_os = "linux")]
+                    wait_for_step: &self.wait_for_step,
                 }),
         }
     }
@@ -146,6 +161,19 @@ where
             // The release ordering is coupled with a load ordering in other
             // threads that guarantee next_item is valid.
             self.write_ptr.store(next_write_pos, Ordering::Release);
+
+            #[cfg(target_os = "linux")]
+            {
+                // Minimize spurious waits.
+                // The u32 cast is only an issue when the size is > u32 and
+                // there could be an overlap with truncation.
+                // A wake will still occur on the next written value.
+                self.wait_for_step
+                    .value
+                    .store(next_write_pos as u32, Ordering::Relaxed);
+                // Notify any readers who queued instead of busy waiting.
+                let _ = self.wait_for_step.wake(i32::MAX);
+            }
 
             true
         }
@@ -218,9 +246,22 @@ where
 
         // In the case that the write pointer hasn't advanced, this saves on
         // expensive memory synchronization.
-        while read_pos == self.write_ptr.load(Ordering::Relaxed) {
-            spin_loop();
-            yield_now();
+        loop {
+            let write_ptr_value = self.write_ptr.load(Ordering::Relaxed);
+            if read_pos != write_ptr_value {
+                break;
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                spin_loop();
+                yield_now();
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                let _ = self.wait_for_step.wait(write_ptr_value as u32);
+            }
         }
 
         // Synchronizes the buffer memory.

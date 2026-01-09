@@ -1,4 +1,3 @@
-use futures::channel::mpsc::Sender;
 use image::{
     codecs::jpeg::JpegDecoder, DynamicImage, ImageBuffer, ImageDecoder, ImageReader, Rgb, RgbImage,
 };
@@ -15,7 +14,7 @@ use std::{
     io::{BufReader, Cursor, Write},
     net::UdpSocket,
     sync::{
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc::{self},
         OnceLock,
     },
@@ -24,7 +23,7 @@ use std::{net::TcpListener, thread};
 
 use crate::{
     atomic_buf::{AtomicBuffer, AtomicBufferSplit},
-    VIDEO_SOCKET,
+    CAMERA_RESOLUTION_LIST, VIDEO_SOCKET,
 };
 
 /// Arbitrary buffer length to allow streaming/analysis to catch up with input.
@@ -32,106 +31,137 @@ const FRAME_BUFFER_SIZE: usize = 128;
 
 type FrameBuffer = AtomicBuffer<Box<[u8]>, FRAME_BUFFER_SIZE, 2>;
 
-pub static RESOLUTIONS: OnceLock<Vec<Resolution>> = OnceLock::new();
-
-fn get_camera() -> Camera {
+fn get_camera(resolution: Option<Resolution>) -> Camera {
     let mut camera = Camera::new(
         CameraIndex::Index(0),
         RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate),
     )
     .unwrap();
 
-    let resolutions = RESOLUTIONS.get_or_init(|| {
-        let resolution_pairs: Vec<(_, _)> = camera
-            .compatible_list_by_resolution(FrameFormat::MJPEG)
-            .unwrap()
-            .into_iter()
-            .collect();
-        let max_framerate = resolution_pairs
-            .iter()
-            .flat_map(|(_, framerate)| framerate)
-            .max()
-            .cloned()
-            .unwrap_or(0);
-        resolution_pairs
-            .into_iter()
-            .filter(|(_resolution, framerate)| framerate.contains(&max_framerate))
-            .map(|(resolution, _framerate)| resolution)
-            .collect()
+    let resolution = resolution.unwrap_or_else(|| {
+        let resolutions = CAMERA_RESOLUTION_LIST.get_or_init(|| {
+            let resolution_pairs: Vec<(_, _)> = camera
+                .compatible_list_by_resolution(FrameFormat::MJPEG)
+                .unwrap()
+                .into_iter()
+                .collect();
+            let max_framerate = resolution_pairs
+                .iter()
+                .flat_map(|(_, framerate)| framerate)
+                .max()
+                .cloned()
+                .unwrap_or(0);
+            let mut resolutions: Box<[_]> = resolution_pairs
+                .into_iter()
+                .filter(|(_resolution, framerate)| framerate.contains(&max_framerate))
+                .map(|(resolution, _framerate)| resolution)
+                .collect();
+            resolutions.sort_unstable();
+            resolutions
+        });
+        let min_resolution = *resolutions.iter().min().unwrap_or(&Resolution::default());
+        min_resolution
     });
-    let min_resolution = *resolutions.iter().min().unwrap_or(&Resolution::default());
 
-    camera.set_resolution(min_resolution).unwrap();
+    camera.set_resolution(resolution).unwrap();
     camera.set_frame_format(FrameFormat::MJPEG).unwrap();
     camera.open_stream().unwrap();
 
     camera
 }
 
-pub fn video_routine(mut qr_reads_tx: Sender<String>) {
-    let mut camera = get_camera();
-
-    let frame = camera.frame_raw().unwrap();
-    let frame_header = format!(
-        "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-        frame.len()
-    );
-
-    drop(camera);
-
+pub fn video_routine(
+    qr_reads_tx: async_channel::Sender<String>,
+    camera_resolution_select_rx: async_channel::Receiver<Resolution>,
+) {
     let mut buffer = FrameBuffer::new();
     let AtomicBufferSplit {
         write_ptr: mut frame_write,
         read_ptrs: [mut frame_streaming, mut frame_analysis],
     } = buffer.split();
 
-    let term_count = AtomicU8::new(0);
-
-    let listener = TcpListener::bind(VIDEO_SOCKET).unwrap();
-    let (mut stream, _) = listener.accept().expect("Failed to accept connection");
+    let flush_qr = AtomicBool::new(false);
 
     thread::scope(|s| {
-        let term_count_1 = &term_count;
-        let camera_reader = s.spawn(move || {
-            println!("Camera Loaded");
-            // Camera isn't thread safe, needs to be recreated.
-            let mut camera = get_camera();
+        let camera_reader = s.spawn(|| {
+            let mut resolution = None;
+            'new_camera: loop {
+                let mut camera = get_camera(resolution);
+                println!("Camera Loaded");
 
-            while term_count_1.load(Ordering::Relaxed) != 1 {
-                let frame = camera.frame_raw().unwrap();
-                // Discard frames whenever readers are behind.
-                let _ = frame_write.try_write(frame.as_ref());
+                loop {
+                    if let Ok(new_resolution) = camera_resolution_select_rx.try_recv() {
+                        resolution = Some(new_resolution);
+                        flush_qr.store(true, Ordering::Relaxed);
+                        continue 'new_camera;
+                    }
+
+                    let frame = camera.frame_raw().unwrap();
+                    // Discard frames whenever readers are behind.
+                    let _ = frame_write.try_write(frame.as_ref());
+                }
             }
-
-            // Done with cleanup.
-            term_count_1.store(0, Ordering::Relaxed);
         });
 
-        let term_count_2 = &term_count;
-        let stream_writer = s.spawn(move || {
-            println!("Stream Loaded");
-            stream
-                .write_all(
-                    "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=--frame\r\n\r\n"
-                        .as_bytes(),
-                )
-                .unwrap();
+        let stream_writer = s.spawn(|| {
+            let mut packet = Vec::new();
+            let mut frame_header_len = 0;
+            let mut cur_frame_len = 0;
 
-            while term_count_2.load(Ordering::Relaxed) != 2 {
-                stream.write_all(frame_header.as_bytes()).unwrap();
-                let frame = frame_streaming.read_spin();
-                stream.write_all(&frame).unwrap();
-                stream.write_all(b"\r\n").unwrap();
+            'new_stream: loop {
+                let listener = TcpListener::bind(VIDEO_SOCKET).unwrap();
+                let (mut stream, _) = listener.accept().expect("Failed to accept connection");
+
+                stream
+                    .write_all(
+                        "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=--frame\r\n\r\n"
+                            .as_bytes(),
+                    )
+                    .unwrap();
+
+                println!("Stream Loaded");
+
+                loop {
+                    let frame = frame_streaming.read_spin();
+
+                    // Camera frame size changed.
+                    if frame.len() != cur_frame_len {
+                        cur_frame_len = frame.len();
+                        let frame_header = format!(
+                            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                            frame.len()
+                        );
+                        frame_header_len = frame_header.len();
+                        packet = frame_header.as_bytes().to_vec();
+                        println!("Updated Frame Size");
+                    }
+
+                    packet.extend_from_slice(&frame);
+                    packet.extend_from_slice(b"\r\n");
+                    if let Err(e) = stream.write_all(&packet) {
+                        // Print errors for diagnostics, but loop for
+                        // reconnects.
+                        eprintln!("{:#?}", e);
+                        continue 'new_stream;
+                    }
+
+                    // Reduce back to just the header
+                    packet.truncate(frame_header_len);
+                }
             }
-
-            // Clean up camera reading thread next.
-            term_count_2.store(1, Ordering::Relaxed);
         });
 
-        let term_count_3 = &term_count;
-        let analysis = s.spawn(move || {
+        let analysis = s.spawn(|| {
             println!("Analysis Loaded");
-            while term_count_3.load(Ordering::Relaxed) != 2 {
+            loop {
+                // Whenever the resolution changes, flush QR processing.
+                // This prevents an oversized window from lagging up the
+                // pipeline with old instructions.
+                if flush_qr.load(Ordering::Relaxed) {
+                    flush_qr.store(false, Ordering::Relaxed);
+                    while frame_analysis.try_read().is_some() {}
+                }
+
                 let next_frame = frame_analysis.read_spin();
                 let image = DynamicImage::from_decoder(
                     JpegDecoder::new(Cursor::new(&**next_frame)).unwrap(),
@@ -143,12 +173,7 @@ pub fn video_routine(mut qr_reads_tx: Sender<String>) {
                 for grid in prepared.detect_grids() {
                     match grid.decode() {
                         Ok((_, text)) => {
-                            // Channel got closed
-                            if qr_reads_tx.try_send(text).is_err() {
-                                // Clean up streaming thread next.
-                                term_count_3.store(2, Ordering::Relaxed);
-                                break;
-                            }
+                            qr_reads_tx.try_send(text).unwrap();
                         }
                         Err(e) => eprintln!("{:#?}", e),
                     }

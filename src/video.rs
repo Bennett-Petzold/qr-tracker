@@ -29,11 +29,22 @@ const FRAME_BUFFER_SIZE: usize = 128;
 type FrameBuffer = AtomicBuffer<Box<[u8]>, FRAME_BUFFER_SIZE, 2>;
 
 fn get_camera(resolution: Option<Resolution>) -> Camera {
-    let mut camera = Camera::new(
-        CameraIndex::Index(0),
-        RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate),
-    )
-    .unwrap();
+    // Get first valid camera idx.
+    let mut camera = (0..=u32::MAX)
+        .flat_map(|idx| {
+            println!("Test camera idx: {idx}");
+            let mut camera = Camera::new(
+                CameraIndex::Index(idx),
+                RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate),
+            )
+            .ok()?;
+            let _valid_camera = camera
+                .compatible_list_by_resolution(FrameFormat::MJPEG)
+                .ok()?;
+            Some(camera)
+        })
+        .next()
+        .unwrap();
 
     let resolution = resolution.unwrap_or_else(|| {
         let resolutions = CAMERA_RESOLUTION_LIST.get_or_init(|| {
@@ -56,8 +67,8 @@ fn get_camera(resolution: Option<Resolution>) -> Camera {
             resolutions.sort_unstable();
             resolutions
         });
-        let min_resolution = *resolutions.iter().min().unwrap_or(&Resolution::default());
-        min_resolution
+
+        *resolutions.iter().min().unwrap_or(&Resolution::default())
     });
 
     camera.set_resolution(resolution).unwrap();

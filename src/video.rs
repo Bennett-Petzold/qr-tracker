@@ -221,7 +221,9 @@ pub fn video_routine(
                                     .decode_multi_def(&mat_frame, &points, &mut decoded_info)
                                     .unwrap();
                                 for text in &decoded_info {
-                                    qr_reads_tx.try_send(text).unwrap();
+                                    if !text.trim().is_empty() {
+                                        qr_reads_tx.try_send(text).unwrap();
+                                    }
                                 }
 
                                 if decoded_info.iter().any(|text| !text.trim().is_empty()) {

@@ -25,7 +25,7 @@ use nokhwa::utils::Resolution;
 use crate::{sqlite::BackingDatabase, video::video_routine};
 
 /// Arbitrary buffer length to allow QR processing to catch up with QR input.
-const QR_BUFFER_SIZE: usize = 128;
+const QR_BUFFER_SIZE: usize = 1024;
 const MIN_SCAN_SPACING_SECS: i64 = 20;
 
 pub const VIDEO_SOCKET: &str = "localhost:2343";

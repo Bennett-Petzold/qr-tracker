@@ -25,6 +25,7 @@ tokio = { version = "1.49", default-features = false, features = ["time"] }
 image = "0.25"
 nokhwa = { version = "0.10", features = ["input-native"] }
 rqrr = "0.10"
+opencv = { version = "0.98", default-features = false, features = ["clang-runtime", "objdetect", "imgcodecs", "imgproc"] }
 
 # Database format
 rusqlite = { version = "0.38", features = ["bundled"] }
@@ -38,7 +39,7 @@ desktop = ["dioxus/desktop"]
 [profile.release]
 opt-level = 3
 debug = false
-strip = "symbols"
+strip = "none"
 overflow-checks = false
 lto = true
 panic = "abort"

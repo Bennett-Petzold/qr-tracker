@@ -10,10 +10,25 @@ use nokhwa::{
     pixel_format::RgbFormat,
     utils::{CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution},
 };
+use opencv::{
+    core::{Mat, MatTrait, MatTraitConst, Point, Size, Vector},
+    imgcodecs::{
+        IMREAD_COLOR, IMREAD_GRAYSCALE, IMREAD_REDUCED_GRAYSCALE_2, IMREAD_REDUCED_GRAYSCALE_4,
+        IMREAD_REDUCED_GRAYSCALE_8, IMREAD_UNCHANGED, imdecode, imread, imwrite_def,
+    },
+    imgproc::{
+        CHAIN_APPROX_SIMPLE, INTER_CUBIC, RETR_EXTERNAL, RETR_LIST, RETR_TREE, THRESH_BINARY,
+        THRESH_OTSU, bounding_rect, find_contours_def, gaussian_blur_def, resize, threshold,
+    },
+    objdetect::QRCodeDetector,
+    prelude::GraphicalCodeDetectorTraitConst,
+};
 use rqrr::PreparedImage;
 
 use std::{
-    io::{Cursor, Write},
+    fs::File,
+    io::{Cursor, Read, Write},
+    process::exit,
     sync::atomic::{AtomicBool, Ordering},
 };
 use std::{net::TcpListener, thread};
@@ -26,7 +41,7 @@ use crate::{
 /// Arbitrary buffer length to allow streaming/analysis to catch up with input.
 const FRAME_BUFFER_SIZE: usize = 128;
 
-type FrameBuffer = AtomicBuffer<Box<[u8]>, FRAME_BUFFER_SIZE, 2>;
+type FrameBuffer = AtomicBuffer<Box<[u8]>, FRAME_BUFFER_SIZE, 5>;
 
 fn get_camera(resolution: Option<Resolution>) -> Camera {
     // Get first valid camera idx.
@@ -85,8 +100,10 @@ pub fn video_routine(
     let mut buffer = FrameBuffer::new();
     let AtomicBufferSplit {
         write_ptr: mut frame_write,
-        read_ptrs: [mut frame_streaming, mut frame_analysis],
+        mut read_ptrs,
     } = buffer.split();
+
+    let (frame_streaming, frame_analysis) = read_ptrs.split_first_mut().unwrap();
 
     let flush_qr = AtomicBool::new(false);
 
@@ -159,38 +176,64 @@ pub fn video_routine(
             }
         });
 
-        let _analysis = s.spawn(|| {
-            println!("Analysis Loaded");
-            loop {
-                // Whenever the resolution changes, flush QR processing.
-                // This prevents an oversized window from lagging up the
-                // pipeline with old instructions.
-                if flush_qr.load(Ordering::Relaxed) {
-                    flush_qr.store(false, Ordering::Relaxed);
-                    while frame_analysis.try_read().is_some() {}
-                }
+        for (scale, frame_reader) in [
+            IMREAD_GRAYSCALE,
+            IMREAD_REDUCED_GRAYSCALE_2,
+            IMREAD_REDUCED_GRAYSCALE_4,
+            IMREAD_REDUCED_GRAYSCALE_8,
+        ]
+        .into_iter()
+        .zip(frame_analysis)
+        {
+            let flush_qr = &flush_qr;
+            let qr_reads_tx = qr_reads_tx.clone();
+            let _analysis = s.spawn(move || {
+                let detector = QRCodeDetector::default().unwrap();
+                let mut decoded_info = Vector::new();
+                let mut points = Mat::default();
 
-                let next_frame = frame_analysis.read_spin();
-                let image = DynamicImage::from_decoder(
-                    JpegDecoder::new(Cursor::new(&**next_frame)).unwrap(),
-                )
-                .unwrap();
-                let image_lum8 = image.to_luma8();
-                let mut prepared = PreparedImage::prepare(image_lum8);
+                println!("Analysis Loaded");
+                loop {
+                    // Whenever the resolution changes, flush QR processing.
+                    // This prevents an oversized window from lagging up the
+                    // pipeline with old instructions.
+                    if flush_qr.load(Ordering::Relaxed) {
+                        flush_qr.store(false, Ordering::Relaxed);
+                        while frame_reader.try_read().is_some() {}
+                    }
 
-                for grid in prepared.detect_grids() {
-                    match grid.decode() {
-                        Ok((_, text)) => {
-                            qr_reads_tx.try_send(text).unwrap();
+                    let next_frame = frame_reader.read_spin();
+
+                    match imdecode(&&**next_frame, scale) {
+                        Ok(mat_frame)
+                            if mat_frame.size().is_err()
+                                || mat_frame.size().is_ok_and(|size| size == Size::new(0, 0)) =>
+                        {
+                            eprintln!("OpenCV error! Empty image!");
                         }
-                        Err(e) => eprintln!("{:#?}", e),
+                        Ok(mat_frame) => {
+                            let detection = detector.detect_multi(&mat_frame, &mut points).unwrap();
+                            if detection {
+                                println!("Trigger: {scale}");
+                                qr_reads_tx.try_send("".to_string()).unwrap();
+
+                                detector
+                                    .decode_multi_def(&mat_frame, &points, &mut decoded_info)
+                                    .unwrap();
+                                for text in &decoded_info {
+                                    qr_reads_tx.try_send(text).unwrap();
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("OpenCV read error: {e}");
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
         camera_reader.join().unwrap();
         _stream_writer.join().unwrap();
-        _analysis.join().unwrap();
     });
 }

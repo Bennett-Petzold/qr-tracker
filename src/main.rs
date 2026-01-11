@@ -19,6 +19,7 @@ use dioxus::{
     desktop::{WindowBuilder, tao::platform::unix::WindowBuilderExtUnix},
     prelude::*,
 };
+use dioxus_desktop::window;
 use nokhwa::utils::Resolution;
 
 use crate::{sqlite::BackingDatabase, video::video_routine};
@@ -130,6 +131,13 @@ fn app() -> Element {
 
     let camera_resolution_list = use_hook(|| CAMERA_RESOLUTION_LIST.wait());
 
+    let img_dims = use_hook(|| {
+        let size = window().window.inner_size();
+        let x = size.width / 3;
+        let y = size.height / 2;
+        (format!("{x}px"), format!("{y}px"))
+    });
+
     let VideoChannels {
         qr_reads_rx,
         camera_resolution_select_tx,
@@ -179,13 +187,21 @@ fn app() -> Element {
                 let next_qr_read = qr_reads_rx.recv().await.unwrap();
                 let time = Local::now();
 
+                // Special handling for empty reads.
+                if next_qr_read.trim().is_empty() {
+                    if process_change().is_empty() {
+                        process_change.set("Registered QR code...".to_string());
+                    }
+                    continue;
+                }
+
                 // Prevent repeated QR scans.
                 let previous_time = total_list.get(&next_qr_read).copied();
                 total_list.insert(next_qr_read.clone(), time);
-                if let Some(previous_time) = previous_time {
-                    if (time - previous_time).num_seconds() < MIN_SCAN_SPACING_SECS {
-                        continue;
-                    }
+                if let Some(previous_time) = previous_time
+                    && ((time - previous_time).num_seconds() < MIN_SCAN_SPACING_SECS)
+                {
+                    continue;
                 }
 
                 let mut list_update = |list: &mut Vec<(String, DateTime<Local>)>,
@@ -247,7 +263,12 @@ fn app() -> Element {
             class: "split left",
             div {
                 class: "centered",
-                img { src: VIDEO_SOCKET_HTTP }
+                img {
+                    src: VIDEO_SOCKET_HTTP,
+                    max_width: img_dims.0,
+                    max_height: img_dims.1,
+                    object_fit: "contain"
+                }
                 br {}
                 button {
                     onclick: move |_| {

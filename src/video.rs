@@ -21,7 +21,7 @@ use opencv::{
         THRESH_OTSU, bounding_rect, find_contours_def, gaussian_blur_def, resize, threshold,
     },
     objdetect::QRCodeDetector,
-    prelude::{GraphicalCodeDetectorTraitConst, QRCodeDetectorTraitConst},
+    prelude::QRCodeDetectorTraitConst,
 };
 use rqrr::PreparedImage;
 

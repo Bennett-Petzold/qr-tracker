@@ -26,7 +26,7 @@ use crate::{sqlite::BackingDatabase, video::video_routine};
 
 /// Arbitrary buffer length to allow QR processing to catch up with QR input.
 const QR_BUFFER_SIZE: usize = 128;
-const MIN_SCAN_SPACING_SECS: i64 = 5;
+const MIN_SCAN_SPACING_SECS: i64 = 20;
 
 pub const VIDEO_SOCKET: &str = "localhost:2343";
 pub const VIDEO_SOCKET_HTTP: &str = const_str::concat!("http://", VIDEO_SOCKET);
@@ -133,8 +133,8 @@ fn app() -> Element {
 
     let img_dims = use_hook(|| {
         let size = window().window.inner_size();
-        let x = size.width / 3;
-        let y = size.height / 2;
+        let x = size.width / 4;
+        let y = size.height / 4;
         (format!("{x}px"), format!("{y}px"))
     });
 

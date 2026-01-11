@@ -187,14 +187,6 @@ fn app() -> Element {
                 let next_qr_read = qr_reads_rx.recv().await.unwrap();
                 let time = Local::now();
 
-                // Special handling for empty reads.
-                if next_qr_read.trim().is_empty() {
-                    if process_change().is_empty() {
-                        process_change.set("Registered QR code...".to_string());
-                    }
-                    continue;
-                }
-
                 // Prevent repeated QR scans.
                 let previous_time = total_list.get(&next_qr_read).copied();
                 total_list.insert(next_qr_read.clone(), time);
@@ -326,19 +318,15 @@ fn app() -> Element {
 
             div {
                 class: "centered",
-                hr {}
-                h2 { "Mentors" }
-                hr {}
+                h3 { "Mentors" }
                 pre { "{mentor_string}" }
 
                 hr {}
-                h2 { "Students" }
+                h3 { "Students" }
                 hr {}
                 pre { "{student_string}" }
 
-                hr {}
-                h2 { "Guests" }
-                hr {}
+                h3 { "Guests" }
                 pre { "{guest_string}" }
             }
         }

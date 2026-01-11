@@ -215,7 +215,6 @@ pub fn video_routine(
                             let detection = detector.detect_multi(&mat_frame, &mut points).unwrap();
                             if detection {
                                 println!("Trigger: {scale}");
-                                qr_reads_tx.try_send("".to_string()).unwrap();
 
                                 detector
                                     .decode_multi_def(&mat_frame, &points, &mut decoded_info)

@@ -223,6 +223,12 @@ pub fn video_routine(
                                 for text in &decoded_info {
                                     qr_reads_tx.try_send(text).unwrap();
                                 }
+
+                                if decoded_info.iter().any(|text| !text.trim().is_empty()) {
+                                    // Flush out remaining frames, they are probably duplicates.
+                                    drop(next_frame);
+                                    while frame_reader.try_read().is_some() {}
+                                }
                             }
                         }
                         Err(e) => {
